@@ -11,11 +11,7 @@ from typing import Dict, Optional
 import httpx
 
 
-# TODO: Implement the following methods
-# - Direct Charge
-#   - Initiate Payments
-#   - Authorize Payments
-#   - Encryption
+
 
 
 class Response:
@@ -90,7 +86,10 @@ class Chapa:
             headers = self.headers
 
         func = getattr(self.client, method)
-        response = func(url, data=data, headers=headers)
+        if method.lower() == "get":
+            response = func(url, params=params or data, headers=headers)
+        else:
+            response = func(url, data=data, headers=headers)
         return getattr(response, "json", lambda: response.text)()
 
     def _construct_request(self, *args, **kwargs):
@@ -333,7 +332,53 @@ class Chapa:
             headers=headers,
         )
         return response
+    
+    #transfer
+    def initiate_transfer(
+        self,
+        account_name: str,
+        account_number: str,
+        amount: str,
+        currency: str,
+        bank_code: int,
+        reference: str = None,
+    ):
+        """
+        Initiates a transfer request to a bank account.
 
+        Args:
+            account_name (str): Recipient's full name.
+            account_number (str): Recipient's bank account number.
+            amount (str): Amount to transfer.
+            currency (str): Currency (e.g., "ETB").
+            bank_code (int): Bank code of the recipient's bank.
+            reference (str, optional): A unique reference for the transfer.
+
+        Returns:
+            dict or Response: Parsed response from Chapa.
+        """
+
+        payload = {
+            "account_name": account_name,
+            "account_number": account_number,
+            "amount": amount,
+            "currency": currency,
+            "bank_code": bank_code,
+        }
+
+        if reference:
+            payload["reference"] = reference
+
+        headers = {
+            "Authorization": f"Bearer {self._key}",
+        }
+        response = self._construct_request(
+            url=f"{self.base_url}/{self.api_version}/transfers",
+            method="post",
+            data=payload,
+            headers=headers,
+        )
+        return response
     def get_banks(self, headers=None) -> dict | Response:
         """Get the list of all banks
 
@@ -348,51 +393,6 @@ class Chapa:
         )
         return response
 
-    def transfer_to_bank(
-        self,
-        *,
-        account_name: str,
-        account_number: str,
-        amount: str,
-        reference: str,
-        beneficiary_name: Optional[str],
-        bank_code: str,
-        currency: str = "ETB",
-    ) -> dict | Response:
-        """Initiate a Bank Transfer
-
-        This section describes how to Initiate a transfer with Chapa
-
-        Args:
-            account_name (str): This is the recipient Account Name matches on their bank account
-            account_number (str): This is the recipient Account Number.
-            amount (str): This the amount to be transferred to the recipient.
-            beneficiary_name (Optional[str]): This is the full name of the Transfer beneficiary (You may use it to match on your required).
-            currency (float): This is the currency for the Transfer. Expected value is ETB.  Default value is ETB.
-            reference (str): This a merchant’s uniques reference for the transfer, it can be used to query for the status of the transfer
-            bank_code (str): This is the recipient bank code. You can see a list of all the available banks and their codes from the get banks endpoint.
-
-        Returns:
-            dict: response from the server
-            response(Response): response object of the response data return from the Chapa server.
-        """
-        data = {
-            "account_name": account_name,
-            "account_number": account_number,
-            "amount": amount,
-            "reference": reference,
-            "bank_code": bank_code,
-            "currency": currency,
-        }
-        if beneficiary_name:
-            data["beneficiary_name"] = beneficiary_name
-
-        response = self._construct_request(
-            url=f"{self.base_url}/{self.api_version}/transfer",
-            method="post",
-            data=data,
-        )
-        return response
 
     def verify_transfer(self, reference: str) -> dict | Response:
         """Verify the status of a transfer
@@ -409,12 +409,288 @@ class Chapa:
                 - data: str | None
             response(Response): response object of the response data return from the Chapa server.
         """
+        
+        url = f"{self.base_url}/{self.api_version}/transfers/verify/{reference}"
         response = self._construct_request(
-            url=f"{self.base_url}/{self.api_version}/transfer/verify/{reference}",
+            url=url,
             method="get",
         )
         return response
+    
 
+    
+    def bulk_transfer(self, title: str, currency: str, bulk_data: list):
+        """
+        Initiates a bulk transfer to multiple recipients.
+
+        Args:
+            title (str): A descriptive title for the batch (e.g. "April Payroll").
+            currency (str): Currency (e.g. "ETB").
+            bulk_data (list): A list of transfer dicts, each containing:
+                account_name, account_number, amount, reference, bank_code
+
+        Returns:
+            dict or Response: Parsed response from Chapa.
+        """
+        if not isinstance(bulk_data, list) or len(bulk_data) == 0:
+            raise ValueError("bulk_data must be a non-empty list of transfer items")
+
+        if len(bulk_data) > 100:
+            raise ValueError("bulk_data must not contain more than 100 items")
+
+        url = f"{self.base_url}/{self.api_version}/bulk-transfers"
+
+        payload = {
+            "title": title,
+            "currency": currency,
+            "bulk_data": bulk_data
+        }
+
+        headers = {
+            "Authorization": f"Bearer {self._key}",
+        }
+        response = self._construct_request(
+            url=url,
+            method="post",
+            data=payload,
+            headers=headers,
+        )
+        return response
+        
+
+
+    def get_bulk_transfer_status(self, batch_id: str):
+        """
+        Retrieves the status of a bulk transfer using its batch_id.
+
+        Args:
+            batch_id (str): ID returned from the initial bulk transfer request.
+
+        Returns:
+            dict or Response: Parsed response from Chapa.
+        """
+        url = f"{self.base_url}/{self.api_version}/transfers"
+        headers = {
+            "Authorization": f"Bearer {self._key}"
+        }
+
+        params = {
+            "batch_id": batch_id
+        }
+
+        response = self.client.get(url, headers=headers, params=params)
+        parsed = getattr(response, "json", lambda: response.text)()
+
+        if self.response_format == "obj" and isinstance(parsed, dict):
+            return convert_response(parsed)
+
+        return parsed
+    def get_all_transfers(self, filters: dict = None):
+        """
+        Retrieves all transfers for your account.
+        
+        Args:
+            filters (dict, optional): Optional query parameters such as:
+                - status
+                - batch_id
+                - date ranges (start_date, end_date)
+                - limit, page, etc.
+
+        Returns:
+            dict or Response: Parsed response from Chapa.
+        """
+        url = f"{self.base_url}/{self.api_version}/transfers"
+        headers = dict(Authorization=f"Bearer {self._key}")
+        response = self._construct_request(
+            url=url,
+            method="get",
+            params=filters or {}
+        )
+        return response
+        
+
+
+    def get_balance(self, currency_code: str = None):
+        """
+        Retrieves the current balance from your Chapa account.
+
+        Args:
+            currency_code (str, optional): If provided, filters balance for specific currency
+                (e.g., "ETB", "USD"). If None, returns all balances.
+
+        Returns:
+            dict or Response: Parsed response from Chapa.
+        """
+        endpoint = f"{self.base_url}/{self.api_version}/balances"
+        if currency_code:
+            endpoint += f"/{currency_code.lower()}"
+
+        headers = {
+            "Authorization": f"Bearer {self._key}"
+        }
+
+        response = self.client.get(endpoint, headers=headers)
+        parsed = getattr(response, "json", lambda: response.text)()
+
+        if self.response_format == "obj" and isinstance(parsed, dict):
+            return convert_response(parsed)
+
+        return parsed
+    def swap_currency(self, amount: float, from_currency: str = "USD", to_currency: str = "ETB"):
+        """
+        Swaps USD to ETB using Chapa's Swap API.
+
+        Args:
+            amount (float): The amount in USD to convert. Min: 1, Max: 10,000.
+            from_currency (str): Source currency. Only 'USD' is currently supported.
+            to_currency (str): Target currency. Only 'ETB' is currently supported.
+
+        Returns:
+            dict or Response: Parsed response from Chapa.
+        """
+        if amount < 1 or amount > 10000:
+            raise ValueError("Amount must be between 1 and 10,000 USD")
+
+        if from_currency.upper() != "USD" or to_currency.upper() != "ETB":
+            raise ValueError("Currently only USD to ETB swap is supported")
+
+        url = f"{self.base_url}/{self.api_version}/swap"
+
+        payload = {
+            "amount": amount,
+            "from": from_currency.upper(),
+            "to": to_currency.upper()
+        }
+
+        headers = {
+            "Authorization": f"Bearer {self._key}",
+            "Content-Type": "application/json"
+        }
+
+        response = self.client.post(url, json=payload, headers=headers)
+        parsed = getattr(response, "json", lambda: response.text)()
+
+        if self.response_format == "obj" and isinstance(parsed, dict):
+            return convert_response(parsed)
+
+        return parsed
+
+
+
+  # - Direct Charge
+    #   - Initiate Payments
+    #   - Authorize Payments
+    #   - Encryption
+
+
+    def initiate_payment(self, *, payment_type: str, amount: str, currency: str, tx_ref: str, mobile: str):
+        """
+        Initiates a direct charge to the customer using the specified payment method.
+
+        Args:
+            payment_type (str): The payment method. Allowed values: telebirr, mpesa, cbebirr, ebirr, enat_bank.
+            amount (str): Amount to charge the customer.
+            currency (str): Currency to use. Only 'ETB' is supported.
+            tx_ref (str): Unique transaction reference.
+            mobile (str): Customer's phone number.
+
+        Returns:
+            dict or Response: API response (parsed JSON or Response object depending on response_format).
+        """
+        if payment_type not in ["telebirr", "mpesa", "cbebirr", "ebirr", "enat_bank"]:
+            raise ValueError("Invalid payment type provided.")
+
+
+        
+        data = {
+        "amount": amount,
+        "currency": currency,
+        "tx_ref": tx_ref,
+        "mobile": mobile
+             }
+    
+        headers = {
+            "Authorization": f"Bearer {self._key}",
+        }
+
+        response = self._construct_request(
+            url=f"{self.base_url}/{self.api_version}/charges?type={payment_type}",
+            method="post",
+            data=data,
+            headers=headers,
+        )
+       
+        return response
+    def authorize_payment(self, *, payment_type: str, reference: str, encrypted_client_payload: str):
+        """
+        Authorize a direct charge transaction after initialization (e.g., OTP or USSD confirmation).
+
+        Args:
+            payment_type (str): Payment method (e.g., amole, telebirr, mpesa, cbebirr, ebirr, etc.).
+            reference (str): Transaction reference (tx_ref).
+            encrypted_client_payload (str): 3DES encrypted client payload string.
+
+        Returns:
+            dict or Response: Parsed JSON or Response object, depending on the response_format.
+        """
+        if not all([payment_type, reference, encrypted_client_payload]):
+            raise ValueError("Missing one or more required parameters: payment_type, reference, client payload")
+
+
+
+        data = {
+            "reference": reference,
+            "client": encrypted_client_payload
+        }
+
+        headers = {
+            "Authorization": f"Bearer {self._key}",
+        }
+        response = self._construct_request(
+            url=f"{self.base_url}/{self.api_version}/validate?type={payment_type}",
+            method="post",
+            data=data,
+            headers=headers,
+        )
+
+        return response
+
+
+    # Refund
+    def refund(self, tx_ref: str, amount: Optional[str] = None, reason: Optional[str] = None, reference: Optional[str] = None, meta: Optional[Dict] = None, headers: Optional[Dict] = None) -> dict | Response:
+        """
+        Initiate a refund for a specific transaction.
+
+        Args:
+            tx_ref (str): The transaction reference provided by Chapa during initialization.
+            amount (str, optional): Amount to refund. If not provided, the full transaction amount will be refunded.
+            reason (str, optional): Reason for the refund.
+            reference (str, optional): A unique identifier for this refund request.
+            meta (dict, optional): Additional metadata.
+            headers (dict, optional): Additional headers to include in the request.
+
+        Returns:
+            dict: response from the server
+            response(Response): response object of the response data returned from the Chapa server.
+        """
+        data = {}
+        if amount:
+            data['amount'] = amount
+        if reason:
+            data['reason'] = reason
+        if reference:
+            data['reference'] = reference
+        if meta and isinstance(meta, dict):
+            for key, value in meta.items():
+                data[f"meta[{key}]"] = value
+
+        response = self._construct_request(
+            url=f"{self.base_url}/{self.api_version}/refund/{tx_ref}",
+            method="post",
+            data=data,
+            headers=headers,
+        )
+        return response
 
 class AsyncChapa:
     def __init__(
@@ -464,6 +740,7 @@ class AsyncChapa:
             headers.update(self.headers)
         elif headers and not isinstance(data, dict):
             raise ValueError("headers must be a dict")
+        
         else:
             headers = self.headers
 
@@ -674,56 +951,56 @@ class AsyncChapa:
         )
         return response
 
-    async def transfer_to_bank(
+    #transfer
+    async def initiate_transfer(
         self,
-        *,
         account_name: str,
         account_number: str,
         amount: str,
-        reference: str,
-        beneficiary_name: Optional[str],
-        bank_code: str,
-        currency: str = "ETB",
+        currency: str,
+        bank_code: int,
+        reference: str = None,
     ):
-        """Initiate a Bank Transfer
-
-        This section describes how to Initiate a transfer with Chapa
+        """
+        Initiates a transfer request to a bank account.
 
         Args:
-            account_name (str): This is the recipient Account Name matches on their bank account
-            account_number (str): This is the recipient Account Number.
-            amount (str): This the amount to be transferred to the recipient.
-            beneficiary_name (Optional[str]): This is the full name of the Transfer beneficiary (You may use it to match on your required).
-            currency (float): This is the currency for the Transfer. Expected value is ETB.  Default value is ETB.
-            reference (str): This a merchant’s uniques reference for the transfer, it can be used to query for the status of the transfer
-            bank_code (str): This is the recipient bank code. You can see a list of all the available banks and their codes from the get banks endpoint.
+            account_name (str): Recipient's full name.
+            account_number (str): Recipient's bank account number.
+            amount (str): Amount to transfer.
+            currency (str): Currency (e.g., "ETB").
+            bank_code (int): Bank code of the recipient's bank.
+            reference (str, optional): A unique reference for the transfer.
 
         Returns:
-            dict: response from the server
-                - message: str
-                - status: str
-                - data: str | None
-            response(Response): response object of the response data return from the Chapa server.
+            dict or Response: Parsed response from Chapa.
         """
-        data = {
+
+        payload = {
             "account_name": account_name,
             "account_number": account_number,
             "amount": amount,
-            "reference": reference,
-            "bank_code": bank_code,
             "currency": currency,
+            "bank_code": bank_code,
         }
-        if beneficiary_name:
-            data["beneficiary_name"] = beneficiary_name
 
-        response = await self._construct_request(
-            url=f"{self.base_url}/{self.api_version}/transfer",
+        if reference:
+            payload["reference"] = reference
+
+        headers = {
+            "Authorization": f"Bearer {self._key}",
+        }
+        response = self._construct_request(
+            url=f"{self.base_url}/{self.api_version}/transfers",
             method="post",
-            data=data,
+            data=payload,
+            headers=headers,
         )
         return response
 
-    async def verify_transfer(self, reference: str):
+
+
+    async def verify_transfer(self, reference: str) -> dict | Response:
         """Verify the status of a transfer
 
         This section describes how to verify the status of a transfer with Chapa
@@ -738,9 +1015,209 @@ class AsyncChapa:
                 - data: str | None
             response(Response): response object of the response data return from the Chapa server.
         """
-        response = await self._construct_request(
-            url=f"{self.base_url}/{self.api_version}/transfer/verify/{reference}",
+        
+        url = f"{self.base_url}/{self.api_version}/transfers/verify/{reference}"
+        response = self._construct_request(
+            url=url,
             method="get",
+        )
+        return response
+    
+
+    
+    async def bulk_transfer(self, title: str, currency: str, bulk_data: list):
+        """
+        Initiates a bulk transfer to multiple recipients.
+
+        Args:
+            title (str): A descriptive title for the batch (e.g. "April Payroll").
+            currency (str): Currency (e.g. "ETB").
+            bulk_data (list): A list of transfer dicts, each containing:
+                account_name, account_number, amount, reference, bank_code
+
+        Returns:
+            dict or Response: Parsed response from Chapa.
+        """
+        if not isinstance(bulk_data, list) or len(bulk_data) == 0:
+            raise ValueError("bulk_data must be a non-empty list of transfer items")
+
+        if len(bulk_data) > 100:
+            raise ValueError("bulk_data must not contain more than 100 items")
+
+        url = f"{self.base_url}/{self.api_version}/bulk-transfers"
+
+        payload = {
+            "title": title,
+            "currency": currency,
+            "bulk_data": bulk_data
+        }
+
+        headers = {
+            "Authorization": f"Bearer {self._key}",
+        }
+        response = self._construct_request(
+            url=url,
+            method="post",
+            data=payload,
+            headers=headers,
+        )
+        return response
+        
+    async def swap_currency(self, amount: float, from_currency: str = "USD", to_currency: str = "ETB"):
+        """
+        Swaps USD to ETB using Chapa's Swap API.
+
+        Args:
+            amount (float): The amount in USD to convert. Min: 1, Max: 10,000.
+            from_currency (str): Source currency. Only 'USD' is currently supported.
+            to_currency (str): Target currency. Only 'ETB' is currently supported.
+
+        Returns:
+            dict or Response: Parsed response from Chapa.
+        """
+        if amount < 1 or amount > 10000:
+            raise ValueError("Amount must be between 1 and 10,000 USD")
+
+        if from_currency.upper() != "USD" or to_currency.upper() != "ETB":
+            raise ValueError("Currently only USD to ETB swap is supported")
+
+        url = f"{self.base_url}/{self.api_version}/swap"
+
+        payload = {
+            "amount": amount,
+            "from": from_currency.upper(),
+            "to": to_currency.upper()
+        }
+
+        headers = {
+            "Authorization": f"Bearer {self._key}",
+            "Content-Type": "application/json"
+        }
+
+        response = self.client.post(url, json=payload, headers=headers)
+        parsed = getattr(response, "json", lambda: response.text)()
+
+        if self.response_format == "obj" and isinstance(parsed, dict):
+            return convert_response(parsed)
+
+        return parsed
+
+
+
+  # - Direct Charge
+    #   - Initiate Payments
+    #   - Authorize Payments
+    #   - Encryption
+
+
+    async def initiate_payment(self, *, payment_type: str, amount: str, currency: str, tx_ref: str, mobile: str):
+        """
+        Initiates a direct charge to the customer using the specified payment method.
+
+        Args:
+            payment_type (str): The payment method. Allowed values: telebirr, mpesa, cbebirr, ebirr, enat_bank.
+            amount (str): Amount to charge the customer.
+            currency (str): Currency to use. Only 'ETB' is supported.
+            tx_ref (str): Unique transaction reference.
+            mobile (str): Customer's phone number.
+
+        Returns:
+            dict or Response: API response (parsed JSON or Response object depending on response_format).
+        """
+        if payment_type not in ["telebirr", "mpesa", "cbebirr", "ebirr", "enat_bank"]:
+            raise ValueError("Invalid payment type provided.")
+
+
+        
+        data = {
+        "amount": amount,
+        "currency": currency,
+        "tx_ref": tx_ref,
+        "mobile": mobile
+             }
+    
+        headers = {
+            "Authorization": f"Bearer {self._key}",
+        }
+
+        response = self._construct_request(
+            url=f"{self.base_url}/{self.api_version}/charges?type={payment_type}",
+            method="post",
+            data=data,
+            headers=headers,
+        )
+       
+        return response
+    async def authorize_payment(self, *, payment_type: str, reference: str, encrypted_client_payload: str):
+        """
+        Authorize a direct charge transaction after initialization (e.g., OTP or USSD confirmation).
+
+        Args:
+            payment_type (str): Payment method (e.g., amole, telebirr, mpesa, cbebirr, ebirr, etc.).
+            reference (str): Transaction reference (tx_ref).
+            encrypted_client_payload (str): 3DES encrypted client payload string.
+
+        Returns:
+            dict or Response: Parsed JSON or Response object, depending on the response_format.
+        """
+        if not all([payment_type, reference, encrypted_client_payload]):
+            raise ValueError("Missing one or more required parameters: payment_type, reference, client payload")
+
+
+
+        data = {
+            "reference": reference,
+            "client": encrypted_client_payload
+        }
+
+        headers = {
+            "Authorization": f"Bearer {self._key}",
+        }
+        response = self._construct_request(
+            url=f"{self.base_url}/{self.api_version}/validate?type={payment_type}",
+            method="post",
+            data=data,
+            headers=headers,
+        )
+
+        return response
+
+
+
+    
+    # Refund
+    async def refund(self, tx_ref: str, amount: Optional[str] = None, reason: Optional[str] = None, reference: Optional[str] = None, meta: Optional[Dict] = None, headers: Optional[Dict] = None) -> dict | Response:
+        """
+        Initiate an asynchronous refund for a specific transaction.
+
+        Args:
+            tx_ref (str): The transaction reference provided by Chapa during initialization.
+            amount (str, optional): Amount to refund. If not provided, the full transaction amount will be refunded.
+            reason (str, optional): Reason for the refund.
+            reference (str, optional): A unique identifier for this refund request.
+            meta (dict, optional): Additional metadata.
+            headers (dict, optional): Additional headers to include in the request.
+
+        Returns:
+            dict: response from the server
+            response(Response): response object of the response data returned from the Chapa server.
+        """
+        data = {}
+        if amount:
+            data['amount'] = amount
+        if reason:
+            data['reason'] = reason
+        if reference:
+            data['reference'] = reference
+        if meta and isinstance(meta, dict):
+            for key, value in meta.items():
+                data[f"meta[{key}]"] = value
+
+        response = await self._construct_request(
+            url=f"{self.base_url}/{self.api_version}/refund/{tx_ref}",
+            method="post",
+            data=data,
+            headers=headers,
         )
         return response
 
